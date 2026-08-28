@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SourceType(str, Enum):
@@ -33,14 +33,14 @@ class ThreatType(str, Enum):
 
 
 class SecurityCheckRequest(BaseModel):
-    agent_id: str = Field(..., examples=["demo-agent"])
-    source: SourceType = Field(..., examples=["external_document"])
-    content: str = Field(..., description="Raw text the agent is about to act on")
-    tool: Optional[str] = Field(None, examples=["send_email"])
-    arguments: Optional[Dict[str, Any]] = Field(default_factory=dict)
+    agent_id: str
+    source: SourceType
+    content: str = Field(..., description="Raw text evaluation target")
+    tool: Optional[str] = None
+    arguments: Dict[str, Any] = Field(default_factory=dict)
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "agent_id": "demo-agent",
                 "source": "external_document",
@@ -48,10 +48,11 @@ class SecurityCheckRequest(BaseModel):
                 "tool": "send_email",
                 "arguments": {
                     "file": "secret.txt",
-                    "recipient": "external@example.com"
-                }
+                    "recipient": "external@example.com",
+                },
             }
         }
+    )
 
 
 class SecurityCheckResponse(BaseModel):
@@ -59,4 +60,4 @@ class SecurityCheckResponse(BaseModel):
     risk_score: int = Field(..., ge=0, le=100)
     threat_type: ThreatType
     trust_level: TrustLevel
-    reasons: List[str]
+    reasons: List[str] = Field(default_factory=list)
