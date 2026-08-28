@@ -1,10 +1,3 @@
-"""
-Halyx — Backend Entrypoint
-Wires the security router in and initializes the database on startup.
-CORS + host/port are env-driven so this runs the same locally and on a
-web host (Render/Railway/Fly/etc).
-"""
-
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
