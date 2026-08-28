@@ -1,12 +1,7 @@
-"""
-Halyx — Gateway Interceptor
-This is the enforcement point. Every tool call an agent wants to make
-passes through here FIRST. Halyx's security core decides ALLOW / REVIEW /
-BLOCK, and only ALLOW (or an approved REVIEW) reaches the real tool.
-"""
+from typing import Any, Callable, Dict, Optional, Tuple
 
-from app.models.schemas import SecurityCheckRequest, Decision, SourceType
-from app.security import trust, detector, risk, policy
+from app.models.schemas import Decision, SourceType, ThreatType, TrustLevel
+from app.security import detector, policy, risk, trust
 from app.tools.registry import execute_tool
 
 
@@ -15,17 +10,17 @@ def run_security_check(
     source: SourceType,
     content: str,
     tool: str,
-    arguments: dict,
-):
-    """Runs the same pipeline as the /security/check API endpoint,
-    but called directly in-process (no HTTP round trip needed)."""
+    arguments: Optional[Dict[str, Any]] = None,
+) -> Tuple[Decision, float, ThreatType, TrustLevel, list]:
+    """Runs in-process security evaluation pipeline."""
+    args = arguments or {}
     trust_level = trust.resolve_trust_level(source)
-    detection = detector.detect(content, tool=tool, arguments=arguments)
+    detection = detector.detect(content, tool=tool, arguments=args)
     risk_score, reasons = risk.score(
         trust_level=trust_level,
         detection=detection,
         tool=tool,
-        arguments=arguments,
+        arguments=args,
     )
     decision = policy.decide(risk_score)
     return decision, risk_score, detection.threat_type, trust_level, reasons
@@ -36,24 +31,19 @@ def intercept_tool_call(
     source: SourceType,
     content: str,
     tool: str,
-    arguments: dict,
-    human_approval_fn=None,
-):
-    """
-    The core enforcement function.
-
-    - ALLOW  -> tool runs immediately
-    - REVIEW -> pauses and asks a human (via human_approval_fn) before running
-    - BLOCK  -> tool never runs, request is rejected outright
-    """
+    arguments: Optional[Dict[str, Any]] = None,
+    human_approval_fn: Optional[Callable[[Dict[str, Any]], bool]] = None,
+) -> Dict[str, Any]:
+    """Evaluates security rules and executes tool if permitted."""
+    args = arguments or {}
     decision, risk_score, threat_type, trust_level, reasons = run_security_check(
-        agent_id, source, content, tool, arguments
+        agent_id, source, content, tool, args
     )
 
     report = {
         "agent_id": agent_id,
         "tool": tool,
-        "arguments": arguments,
+        "arguments": args,
         "decision": decision,
         "risk_score": risk_score,
         "threat_type": threat_type,
@@ -62,17 +52,17 @@ def intercept_tool_call(
     }
 
     if decision == Decision.BLOCK:
-        report["execution"] = {"status": "blocked", "message": "Tool call blocked by Halyx."}
+        report["execution"] = {"status": "blocked", "message": "Tool call blocked."}
         return report
 
     if decision == Decision.REVIEW:
         approved = human_approval_fn(report) if human_approval_fn else False
         if not approved:
-            report["execution"] = {"status": "rejected_by_human", "message": "Human reviewer denied the request."}
+            report["execution"] = {
+                "status": "rejected_by_human",
+                "message": "Human reviewer denied the request.",
+            }
             return report
-        # fall through to execution if approved
 
-    # ALLOW, or REVIEW that got human approval
-    result = execute_tool(tool, arguments)
-    report["execution"] = result
+    report["execution"] = execute_tool(tool, args)
     return report
