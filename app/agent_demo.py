@@ -1,10 +1,3 @@
-"""
-Halyx — Simulated Agent Demo
-Feeds a handful of realistic scenarios through the interceptor so you can
-watch ALLOW / REVIEW / BLOCK happen in real time. Run with:
-    python -m app.agent_demo
-"""
-
 from app.models.schemas import SourceType
 from app.gateway.interceptor import intercept_tool_call
 
