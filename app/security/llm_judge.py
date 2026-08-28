@@ -1,31 +1,23 @@
-"""
-Halyx — LLM Judge (Stage 4, optional layer)
-Only runs when content is borderline (regex/fuzzy/semantic gave a
-non-zero-but-not-conclusive signal), to save API cost/latency. Never
-blocks the pipeline if it fails — it's a bonus signal, not a dependency.
-Requires HALYX_ENABLE_LLM_JUDGE=true and ANTHROPIC_API_KEY in .env.
-"""
-
 import os
-from typing import Optional, Tuple
-
-_ENABLED = os.getenv("HALYX_ENABLE_LLM_JUDGE", "false").lower() == "true"
+from typing import Any, Dict, Optional, Tuple
 
 
-def llm_judge(content: str, tool: Optional[str], arguments: dict) -> Tuple[Optional[bool], int, str]:
-    """Returns (is_injection: bool|None, contribution_score 0-100, note).
-    is_injection is None if the judge didn't run (disabled/no key/error)."""
-    if not _ENABLED:
+def llm_judge(
+    content: str,
+    tool: Optional[str],
+    arguments: Dict[str, Any],
+) -> Tuple[Optional[bool], int, str]:
+    if os.getenv("HALYX_ENABLE_LLM_JUDGE", "false").lower() != "true":
         return None, 0, "LLM judge disabled"
+
+    api_key = os.getenv("ANTHROPIC_API_KEY")
+    if not api_key:
+        return None, 0, "ANTHROPIC_API_KEY not set"
 
     try:
         import anthropic
     except ImportError:
         return None, 0, "anthropic package not installed"
-
-    api_key = os.getenv("ANTHROPIC_API_KEY")
-    if not api_key:
-        return None, 0, "ANTHROPIC_API_KEY not set"
 
     try:
         client = anthropic.Anthropic(api_key=api_key)
@@ -39,7 +31,7 @@ def llm_judge(content: str, tool: Optional[str], arguments: dict) -> Tuple[Optio
             f"Arguments: {arguments}"
         )
         response = client.messages.create(
-            model="claude-sonnet-4-6",
+            model="claude-3-5-sonnet-20241022",
             max_tokens=5,
             messages=[{"role": "user", "content": prompt}],
         )
@@ -47,5 +39,5 @@ def llm_judge(content: str, tool: Optional[str], arguments: dict) -> Tuple[Optio
         is_injection = verdict.startswith("Y")
         score = 55 if is_injection else 0
         return is_injection, score, f"LLM verdict: {verdict}"
-    except Exception as e:
-        return None, 0, f"LLM judge error: {e}"
+    except Exception as err:
+        return None, 0, f"LLM judge error: {err}"
