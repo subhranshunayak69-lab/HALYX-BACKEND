@@ -1,42 +1,36 @@
-"""
-Halyx — Multi-Layer Detection Engine
-Combines four independent layers, each catching what the others might miss:
-  1. Regex        — exact known attack phrasing (fast, zero cost)
-  2. Fuzzy match  — reworded/typo'd versions of known phrases
-  3. Semantic     — meaning-based similarity, catches full paraphrases
-  4. LLM judge    — optional deep check, only runs on ambiguous cases
-"""
-
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from app.models.schemas import ThreatType
 from app.security.fuzzy import fuzzy_detect
-from app.security.semantic import semantic_detect
 from app.security.llm_judge import llm_judge
+from app.security.semantic import semantic_detect
 
-_INSTRUCTION_OVERRIDE_PATTERNS = [
-    r"ignore (all |any )?(previous|prior|above) instructions",
-    r"disregard (all |any )?(previous|prior|above) (instructions|rules)",
-    r"forget (your|all|previous) instructions",
-    r"you are now",
-    r"new instructions?:",
-    r"system prompt",
-    r"act as (if|though)",
-    r"override (your|the) (rules|instructions|policy)",
+OVERRIDE_PATTERNS = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"ignore (all |any )?(previous|prior|above) instructions",
+        r"disregard (all |any )?(previous|prior|above) (instructions|rules)",
+        r"forget (your|all|previous) instructions",
+        r"you are now",
+        r"new instructions?:",
+        r"system prompt",
+        r"act as (if|though)",
+        r"override (your|the) (rules|instructions|policy)",
+    ]
 ]
 
-_EXFILTRATION_PATTERNS = [
-    r"send (this|it|the file|secret|password|credentials?)",
-    r"email (this|it|to) ",
-    r"upload (this|it) to",
-    r"post (this|it) to",
-    r"share (this|it) with",
+EXFILTRATION_PATTERNS = [
+    re.compile(p, re.IGNORECASE)
+    for p in [
+        r"send (this|it|the file|secret|password|credentials?)",
+        r"email (this|it|to) ",
+        r"upload (this|it) to",
+        r"post (this|it) to",
+        r"share (this|it) with",
+    ]
 ]
-
-_COMPILED_OVERRIDE = [re.compile(p, re.IGNORECASE) for p in _INSTRUCTION_OVERRIDE_PATTERNS]
-_COMPILED_EXFIL = [re.compile(p, re.IGNORECASE) for p in _EXFILTRATION_PATTERNS]
 
 
 @dataclass
@@ -47,14 +41,18 @@ class DetectionResult:
     layers_triggered: List[str] = field(default_factory=list)
 
 
-def _regex_detect(content: str):
-    override_hits = [p.pattern for p in _COMPILED_OVERRIDE if p.search(content)]
-    exfil_hits = [p.pattern for p in _COMPILED_EXFIL if p.search(content)]
+def _regex_detect(content: str) -> Tuple[List[str], List[str]]:
+    override_hits = [p.pattern for p in OVERRIDE_PATTERNS if p.search(content)]
+    exfil_hits = [p.pattern for p in EXFILTRATION_PATTERNS if p.search(content)]
     return override_hits, exfil_hits
 
 
-def detect(content: str, tool: Optional[str] = None, arguments: Optional[Dict] = None) -> DetectionResult:
-    arguments = arguments or {}
+def detect(
+    content: str,
+    tool: Optional[str] = None,
+    arguments: Optional[Dict[str, Any]] = None,
+) -> DetectionResult:
+    args = arguments or {}
     matched: List[str] = []
     layers: List[str] = []
     score = 0
@@ -64,7 +62,12 @@ def detect(content: str, tool: Optional[str] = None, arguments: Optional[Dict] =
     if override_hits or exfil_hits:
         matched.extend([f"regex:'{p}'" for p in override_hits + exfil_hits])
         layers.append("regex")
-        score += 90 if (override_hits and exfil_hits) else (60 if override_hits else 50)
+        if override_hits and exfil_hits:
+            score = 90
+        elif override_hits:
+            score = 60
+        else:
+            score = 50
 
     # Layer 2: Fuzzy
     fuzzy_matches, fuzzy_score = fuzzy_detect(content)
@@ -80,21 +83,17 @@ def detect(content: str, tool: Optional[str] = None, arguments: Optional[Dict] =
         layers.append("semantic")
         score = max(score, semantic_score)
 
-    # Layer 4: LLM judge — only spend the API call on ambiguous cases (some
-    # signal already, but not already a slam-dunk regex block)
+    # Layer 4: LLM Judge
     if 20 <= score < 80:
-        is_injection, llm_score, note = llm_judge(content, tool, arguments)
-        if is_injection is True:
+        is_injection, llm_score, note = llm_judge(content, tool, args)
+        if is_injection is not None:
             matched.append(f"llm:{note}")
             layers.append("llm")
-            score = max(score, llm_score, 70)  # LLM confirming pushes it high
-        elif is_injection is False:
-            matched.append(f"llm:{note}")
-            layers.append("llm")
-            # LLM disagrees — don't erase other layers' evidence, just don't add to it
+            if is_injection:
+                score = max(score, llm_score, 70)
 
     if not matched:
-        return DetectionResult(threat_type=ThreatType.NONE, matched_patterns=[], injection_score=0, layers_triggered=[])
+        return DetectionResult(threat_type=ThreatType.NONE)
 
     if override_hits and exfil_hits:
         threat_type = ThreatType.INDIRECT_PROMPT_INJECTION
